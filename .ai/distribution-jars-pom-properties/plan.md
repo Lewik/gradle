@@ -224,3 +224,53 @@ Re-verified after the migration, all with 1980 timestamps and
 - [x] `:distributions-core:runtimeApiInfoJar` — synthesized metadata jar
 - [x] `:distributions-core:jarGradleApiLegacy` — public-API ABI jar
 - [x] `:distributions-full:gradleApiKotlinExtensionsJar` — kotlin-dsl extensions
+
+## Follow-up: full version in the JAR manifest
+
+`Implementation-Version` recorded only the base version (`9.7.0`) while the jar was
+published under the full version, and while the new `pom.properties` recorded the
+full version. The manifest now uses the same value as `pom.properties`, so a jar's
+two metadata sources agree.
+
+The shared rule moved out of `PomProperties.kt` into
+`gradlebuild/identity/ModuleVersions.kt` as `Project.reproducibleFullVersion()`,
+so the manifest and `pom.properties` cannot drift apart. Wired at the three sites
+that set the attribute: `gradlebuild.module-identity` (all module jars) and
+`gradlebuild.distributions` (`runtimeApiInfoJar`, `gradleApiKotlinExtensionsJar`).
+
+`archiveVersion` still uses the base version, so no jar file name changes.
+`wrapper-main` still removes the attribute from its executable jar.
+
+Tests: `DistributionIntegrationSpec.assertIsGradleJar` (29 call sites) asserted
+equality with `baseVersion`. The expectation moved to a shared
+`jarMetadataVersion` field on `DistributionIntegrationSpec`, which
+`DistributionIntegritySpec` now reuses instead of computing the SNAPSHOT rule a
+second time.
+
+Notes on consequences:
+
+- Nothing in Gradle reads its own `Implementation-Version`. The runtime version
+  comes from `/org/gradle/build-receipt.properties` (`DefaultGradleVersion.RESOURCE_NAME`).
+  Every `getImplementationVersion()` call in the codebase reads third-party jars
+  (jansi, checkstyle, zinc) or native toolchains.
+- Using the raw full version would break reproducibility, since nightly versions
+  embed a per-build timestamp. Verified: with `project.version` =
+  `9.7.0-20260824220000+0000`, the jar records `9.7.0-SNAPSHOT` and
+  `:base-services:jar --rerun-tasks` produces a byte-identical jar.
+- For nightlies the recorded version (`-SNAPSHOT`) still differs from the
+  timestamped version the artifact is published under. Deliberate reproducibility
+  tradeoff, unchanged from the `pom.properties` decision.
+- Downstream callers of `Package.getImplementationVersion()` now see e.g.
+  `9.7.0-milestone-2` rather than `9.7.0`. Strict `X.Y.Z` parsers would need to
+  cope; this is the one effect visible outside the repo.
+
+Verified (manifest and `pom.properties` agreeing, file names on base version):
+
+- [x] `:base-services:jar`
+- [x] `:tooling-api:toolingApiShadedJar`
+- [x] `:distributions-core:runtimeApiInfoJar`
+- [x] `:distributions-core:jarGradleApiLegacy`
+- [x] `:distributions-full:gradleApiKotlinExtensionsJar`
+- [x] Reproducibility across `--rerun-tasks`
+- [x] `./gradlew :build-logic:check`
+- [x] `:distributions-integ-tests:compileIntegTestGroovy`
