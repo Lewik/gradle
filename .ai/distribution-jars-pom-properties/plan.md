@@ -274,3 +274,71 @@ Verified (manifest and `pom.properties` agreeing, file names on base version):
 - [x] Reproducibility across `--rerun-tasks`
 - [x] `./gradlew :build-logic:check`
 - [x] `:distributions-integ-tests:compileIntegTestGroovy`
+
+## Follow-up: vendor evidence in the JAR manifest
+
+Goal: help scanners that read the manifest work out which Maven artifact a jar is.
+Source of the proposal: the "CPE hardening (pipeline B)" bullet in the GBT Security
+Subscription notes, which suggests `Implementation-Vendor` and `Bundle-SymbolicName`.
+Each claim was checked against the scanners' own source rather than taken on trust.
+
+### Added
+
+- `Implementation-Vendor: Gradle Technologies` — OWASP Dependency-Check's
+  `JarAnalyzer` turns this into VENDOR evidence at **HIGH** confidence. The value
+  matches the organization already declared in our published POMs
+  (`gradlebuild.publish-defaults`), and tokenises to include `gradle`, the vendor of
+  `cpe:2.3:a:gradle:gradle` (494 CPE entries in NVD).
+- `Implementation-Vendor-Id: org.gradle` — VENDOR evidence at MEDIUM confidence in
+  the same analyzer. Not in the original proposal, but the most directly relevant
+  attribute for artifact identity: by Maven Archiver convention it carries the
+  **groupId**, so the manifest alone now states the group, mirroring `pom.properties`
+  for tools that read one but not the other.
+
+`Implementation-Title` was deliberately left as `Gradle`. It is PRODUCT evidence at
+HIGH confidence and `Gradle` is the product half of `cpe:2.3:a:gradle:gradle`;
+changing it to the module name would weaken the CPE match this work is meant to
+strengthen.
+
+### Rejected: `Bundle-SymbolicName`
+
+The proposal's second half is not supported:
+
+- Dependency-Check: the string appears only in `dependencycheck-base-hint.xml` and a
+  test resource. `JarAnalyzer` never reads it as evidence, so it contributes nothing
+  to the CPE pipeline it was suggested for.
+- Syft: `extractNameFromApacheMavenBundlePlugin` consults it only when `Created-By`
+  contains "Apache Maven Bundle Plugin", which Gradle's jars do not.
+- It also carries risk. Without `Bundle-ManifestVersion`/`Bundle-Version` the jars
+  would advertise themselves as invalid OSGi bundles, and Syft's `selectName` prefers
+  `Bundle-Name` over `Implementation-Title`, so partial OSGi headers could change
+  identification rather than sharpen it.
+
+### Simplification
+
+`gradlebuild.distributions` applies `gradlebuild.module-identity`, so its two
+synthesized jars already inherited the `tasks.withType<Jar>` manifest configuration;
+their own `manifest.attributes` blocks set byte-identical values. Verified by
+capturing the manifests before and after, then removing the duplicates. The
+attributes are now set in one place instead of three.
+
+### Verified
+
+- [x] All four attributes present on: standard jar, shaded tooling-api jar,
+      `runtimeApiInfoJar`, `gradleApiKotlinExtensionsJar`
+- [x] Reproducibility: `:base-services:jar --rerun-tasks` byte-identical
+- [x] `gradle-wrapper.jar` still has no `Implementation-Version`, so it stays
+      identical across releases; the vendor fields are version-independent. Its
+      checksum does change once, in the release this lands in.
+- [x] `./gradlew :build-logic:check`
+- [x] `DistributionIntegritySpec` + `BinDistributionIntegrationSpec`: 13 tests, 0
+      failures. `assertIsGradleJar` now asserts both new attributes across its jars.
+
+### Note for the security notes
+
+`Security Release Versioning Options.md` states that jar `archiveVersion` **and**
+MANIFEST `Implementation-Version` both come from `baseVersion`. The second half is no
+longer true: the manifest now carries the full version. That bears on the M5
+("reaches artifact identity") assessment for qualifier-style security versions, since
+the distinguishing suffix is now visible in the manifest even though the jar file
+name still uses the base version.
